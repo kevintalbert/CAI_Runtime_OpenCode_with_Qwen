@@ -7,6 +7,9 @@
 #   CAII_API_TOKEN       — bearer token for the endpoint
 #   CAII_MODEL           — model id string your CAII route expects (often matches
 #                          the Hugging Face repo id or registry name)
+#   CAII_MODEL_SUPPORTS_TOOLS — set to true/1/yes only if your CAII endpoint has
+#                          vLLM tool flags enabled; otherwise generated config sets
+#                          tool_call: false so OpenCode does not send tool_choice:auto
 #
 # Commands:
 #   opencode-sync-config  — write ~/.config/opencode/opencode.json from env
@@ -24,11 +27,20 @@ _opencode_sync_config() {
 
     mkdir -p "$(dirname "$_OPENCODE_CONFIG")"
 
+    local _tools_flag="${CAII_MODEL_SUPPORTS_TOOLS:-}"
+    # vLLM without --enable-auto-tool-choice rejects tool_choice:auto; OpenCode honors
+    # provider model "tool_call": false to avoid sending tool-calling to the API.
+    # https://opencode.ai/config.json — models.*.tool_call
+
     # apiKey/baseURL use OpenCode env indirection so secrets are not written to disk.
     jq -n \
         --arg mid "$CAII_MODEL" \
         --arg schema "https://opencode.ai/config.json" \
-        '{
+        --arg tools "$_tools_flag" \
+        '(
+            ($tools == "true" or $tools == "1" or $tools == "yes" or $tools == "TRUE")
+        ) as $server_tools |
+        {
             "$schema": $schema,
             "model": ("caii/" + $mid),
             "small_model": ("caii/" + $mid),
@@ -42,15 +54,23 @@ _opencode_sync_config() {
                         "apiKey": "{env:CAII_API_TOKEN}"
                     },
                     "models": {
-                        ($mid): {
-                            "name": ("CAII: " + $mid)
-                        }
+                        ($mid): (
+                            if $server_tools then
+                                { "name": ("CAII: " + $mid) }
+                            else
+                                { "name": ("CAII: " + $mid), "tool_call": false }
+                            end
+                        )
                     }
                 }
             }
         }' > "$_OPENCODE_CONFIG"
 
-    echo "Wrote $_OPENCODE_CONFIG (provider caii, model caii/${CAII_MODEL})."
+    if [[ "${_tools_flag}" == "true" || "${_tools_flag}" == "1" || "${_tools_flag}" == "yes" || "${_tools_flag}" == "TRUE" ]]; then
+        echo "Wrote $_OPENCODE_CONFIG (provider caii, model caii/${CAII_MODEL}, tool_call per server)."
+    else
+        echo "Wrote $_OPENCODE_CONFIG (provider caii, model caii/${CAII_MODEL}, tool_call:false — chat-style; set CAII_MODEL_SUPPORTS_TOOLS=true if CAII has vLLM tool args)."
+    fi
 }
 
 opencode-sync-config() {
